@@ -1,63 +1,60 @@
 package main
 
 import (
+	"fmt"
 	"log"
-	"net"
 	"os"
+	"strconv"
 
-	"github.com/armon/go-socks5"
-	"github.com/caarlos0/env/v6"
+	"github.com/caarlos0/env/v11"
+	"github.com/things-go/go-socks5"
 )
 
-type params struct {
-	User            string    `env:"PROXY_USER" envDefault:""`
-	Password        string    `env:"PROXY_PASSWORD" envDefault:""`
-	Port            string    `env:"PROXY_PORT" envDefault:"1080"`
-	AllowedDestFqdn string    `env:"ALLOWED_DEST_FQDN" envDefault:""`
-	AllowedIPs      []string  `env:"ALLOWED_IPS" envSeparator:"," envDefault:""`
+type ProxyUser struct {
+	Username string `env:"USERNAME" envDefault:""`
+	Password string `env:"PASSWORD" envDefault:""`
+}
+
+type ProxyParams struct {
+	Credentials     []ProxyUser `envPrefix:"PROXY_CREDS"`
+	Port            int         `env:"PROXY_PORT" envDefault:"1080"`
+	AllowedDestFqdn string      `env:"ALLOWED_DEST_FQDN" envDefault:""`
 }
 
 func main() {
 	// Working with app params
-	cfg := params{}
+	cfg := ProxyParams{}
 	err := env.Parse(&cfg)
 	if err != nil {
 		log.Printf("%+v\n", err)
 	}
 
-	//Initialize socks5 config
-	socks5conf := &socks5.Config{
-		Logger: log.New(os.Stdout, "", log.LstdFlags),
+	fmt.Printf("Proxy config: %+v\n", cfg)
+
+	// Initialize socks5 options
+	opts := []socks5.Option{
+		socks5.WithLogger(socks5.NewLogger(log.New(os.Stdout, "socks5: ", log.LstdFlags))),
 	}
 
-	if cfg.User+cfg.Password != "" {
-		creds := socks5.StaticCredentials{
-			os.Getenv("PROXY_USER"): os.Getenv("PROXY_PASSWORD"),
+	if len(cfg.Credentials) > 0 {
+		creds := make(socks5.StaticCredentials, len(cfg.Credentials))
+		for _, c := range cfg.Credentials {
+			creds[c.Username] = c.Password
 		}
 		cator := socks5.UserPassAuthenticator{Credentials: creds}
-		socks5conf.AuthMethods = []socks5.Authenticator{cator}
+		authMethods := []socks5.Authenticator{cator}
+		opts = append(opts, socks5.WithAuthMethods(authMethods))
 	}
 
 	if cfg.AllowedDestFqdn != "" {
-		socks5conf.Rules = PermitDestAddrPattern(cfg.AllowedDestFqdn)
+		rules := PermitDestAddrPattern(cfg.AllowedDestFqdn)
+		opts = append(opts, socks5.WithRule(rules))
 	}
 
-	server, err := socks5.New(socks5conf)
-	if err != nil {
-		log.Fatal(err)
-	}
+	server := socks5.NewServer(opts...)
 
-	// Set IP whitelist
-	if len(cfg.AllowedIPs) > 0 {
-		whitelist := make([]net.IP, len(cfg.AllowedIPs))
-		for i, ip := range cfg.AllowedIPs {
-			whitelist[i] = net.ParseIP(ip)
-		}
-		server.SetIPWhitelist(whitelist)
-	}
-
-	log.Printf("Start listening proxy service on port %s\n", cfg.Port)
-	if err := server.ListenAndServe("tcp", ":"+cfg.Port); err != nil {
+	log.Printf("Start listening proxy service on port %d\n", cfg.Port)
+	if err := server.ListenAndServe("tcp", ":"+strconv.Itoa(cfg.Port)); err != nil {
 		log.Fatal(err)
 	}
 }
